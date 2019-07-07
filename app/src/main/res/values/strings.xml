@@ -1,0 +1,6 @@
+<resources>
+    <string name="app_name">clipc</string>
+    <string name="action_settings">Settings</string>
+    <string name="remote_host">aaaa</string>
+    <string name="remote_port">0</string>
+</resources>
