@@ -15,6 +15,7 @@ import android.util.Log
 import android.view.Menu
 import android.view.MenuItem
 import android.widget.TextView
+import android.widget.Toast
 
 import kotlinx.android.synthetic.main.activity_main.*
 import java.io.*
@@ -68,6 +69,9 @@ class MainActivity : AppCompatActivity() {
                 var s = ClientSocket(remote_host, remote_port)
                 var img = s.update()
                 imgWrite(img)
+                runOnUiThread {
+                    Toast.makeText(this, "get clip OK", Toast.LENGTH_SHORT).show()
+                }
             }.start()
         } catch (e: Exception) {
             e.printStackTrace()
