@@ -23,8 +23,11 @@ import java.io.*
 import java.net.Socket
 import java.util.*
 import android.support.v4.content.FileProvider
+import android.app.Activity
+import com.google.protobuf.ByteString
 
 
+val GALLERY_REQUEST_CODE = 1000
 
 class ClientSocket(host: String, port: Int) : Socket(host, port) {
     var rstream = inputStream
@@ -38,6 +41,31 @@ class ClientSocket(host: String, port: Int) : Socket(host, port) {
         Log.d("mytag", "get clip all ok")
         this.close()
         return img
+    }
+
+    fun File.copyInputStreamToFile(inputStream: InputStream) {
+        inputStream.use { input ->
+            this.outputStream().use { fileOut ->
+                input.copyTo(fileOut)
+            }
+        }
+    }
+}
+
+class PushSocket(host: String, port: Int) : Socket(host, port) {
+    var rstream = inputStream
+    var wstream =  outputStream
+
+    fun update(msg: ClipMsg.ClipMessage) {
+        var magic = byteArrayOf(0xd, 0xa)
+        var img = msg.toByteArray()
+        var magic_size = 2+img.size
+
+        wstream.write(magic_size)
+        wstream.write(magic)
+        wstream.write(img)
+        Log.d("mytag", "push clip all ok")
+        this.close()
     }
 
     fun File.copyInputStreamToFile(inputStream: InputStream) {
@@ -97,6 +125,64 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private fun pickFromGallery() {
+        //Create an Intent with action as ACTION_PICK
+        val intent = Intent(Intent.ACTION_PICK)
+        // Sets the type as image/*. This ensures only components of type image are selected
+        intent.type = "image/*"
+        //We pass an extra array with the accepted mime types. This will ensure only components with these MIME types as targeted.
+        val mimeTypes = arrayOf("image/png")
+        intent.putExtra(Intent.EXTRA_MIME_TYPES, mimeTypes)
+        // Launching the Intent
+        startActivityForResult(intent, GALLERY_REQUEST_CODE)
+    }
+
+    @Throws(IOException::class)
+    private fun readBytes(uri: Uri): ByteArray? =
+        contentResolver.openInputStream(uri)?.buffered()?.use { it.readBytes() }
+
+    public override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        // Result code is RESULT_OK only if the user selects an Image
+        if (resultCode == Activity.RESULT_OK)
+            when (requestCode) {
+                GALLERY_REQUEST_CODE -> {
+                    //data.getData returns the content URI for the selected Image
+                    val selectedImage = data!!.data
+//                    imageView.setImageURI(selectedImage)
+
+                    val input_data = ByteString.copyFrom(readBytes(selectedImage))
+
+                    val textView: TextView = findViewById(R.id.hello) as TextView
+                    textView.text = "select ok"
+
+                    var msg = createClipMessageDefault()
+                        .newBuilderForType()
+                        .setStSize(input_data.size())
+                        .setStType(ClipMsg.ClipMessage.msgtype.MSG_PUSH)
+                        .setStPadding(input_data)
+                        .build()
+
+                    var sharedpref: SharedPreferences = PreferenceManager.getDefaultSharedPreferences(this);
+                    var remote_host = sharedpref.getString("remote_host", "127.0.0.1");
+                    var remote_port_s = sharedpref.getString("remote_port", "0");
+                    if (remote_host == "127.0.0.1") {return}
+                    if (remote_port_s.toIntOrNull() == null) {return}
+                    var remote_port = remote_port_s.toInt() + 1
+                    try {
+                        Thread {
+                            var s = PushSocket(remote_host, remote_port)
+                            s.update(msg)
+                            runOnUiThread {
+                                Toast.makeText(this, "push clip OK", Toast.LENGTH_SHORT).show()
+                            }
+                        }.start()
+                    } catch (e: Exception) {
+                        e.printStackTrace()
+                    }
+                }
+            }
+    }
+
     override fun onStart() {
         super.onStart()
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.WRITE_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED) {
@@ -125,6 +211,17 @@ class MainActivity : AppCompatActivity() {
         fab2.setOnClickListener {
             imgShare()
         }
+
+        fab3.setOnClickListener {
+            pickFromGallery()
+        }
+    }
+
+    private fun createClipMessageDefault(): ClipMsg.ClipMessage {
+        val msg_push = ClipMsg.ClipMessage.newBuilder()
+            .setStName(1)
+            .build()
+        return msg_push
     }
 
     override fun onCreateOptionsMenu(menu: Menu): Boolean {
