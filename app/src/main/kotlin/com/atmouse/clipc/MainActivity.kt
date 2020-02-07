@@ -24,7 +24,12 @@ import java.net.Socket
 import java.util.*
 import android.support.v4.content.FileProvider
 import android.app.Activity
+import android.content.ClipData
+import android.content.ClipDescription.MIMETYPE_TEXT_PLAIN
+import android.content.ClipboardManager
 import com.google.protobuf.ByteString
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
 
 
 val GALLERY_REQUEST_CODE = 1000
@@ -33,14 +38,22 @@ class ClientSocket(host: String, port: Int) : Socket(host, port) {
     var rstream = inputStream
     var wstream =  outputStream
 
-    fun update(): ByteArray {
-        var magic = byteArrayOf(0x10, 0x1, 0x18, 0x3)
-        wstream.write(magic)
+    fun get_msg(msg: ClipMsg.ClipMessage): ClipMsg.ClipMessage {
+        var magic = byteArrayOf(0xd, 0xa)
+        var data = msg.toByteArray()
+        var magic_size = ByteBuffer.allocate(4)
+            .order(ByteOrder.BIG_ENDIAN)
+            .putInt(magic.size + data.size)
+            .array();
+
+        wstream.write(magic_size + magic + data)
+        wstream.flush()
         Log.d("mytag", "write clip all ok")
         var img = rstream.readBytes()
+        var msg = ClipMsg.ClipMessage.parseFrom(img)
         Log.d("mytag", "get clip all ok")
         this.close()
-        return img
+        return msg
     }
 
     fun File.copyInputStreamToFile(inputStream: InputStream) {
@@ -52,30 +65,6 @@ class ClientSocket(host: String, port: Int) : Socket(host, port) {
     }
 }
 
-class PushSocket(host: String, port: Int) : Socket(host, port) {
-    var rstream = inputStream
-    var wstream =  outputStream
-
-    fun update(msg: ClipMsg.ClipMessage) {
-        var magic = byteArrayOf(0xd, 0xa)
-        var img = msg.toByteArray()
-        var magic_size = 2+img.size
-
-        wstream.write(magic_size)
-        wstream.write(magic)
-        wstream.write(img)
-        Log.d("mytag", "push clip all ok")
-        this.close()
-    }
-
-    fun File.copyInputStreamToFile(inputStream: InputStream) {
-        inputStream.use { input ->
-            this.outputStream().use { fileOut ->
-                input.copyTo(fileOut)
-            }
-        }
-    }
-}
 
 class MainActivity : AppCompatActivity() {
     companion object {
@@ -113,9 +102,26 @@ class MainActivity : AppCompatActivity() {
         var remote_port = remote_port_s.toInt()
         try {
             Thread {
+                var msg = createClipMessageDefault()
+                    .newBuilderForType()
+                    .setStType(ClipMsg.ClipMessage.msgtype.MSG_GET)
+                    .build()
+
                 var s = ClientSocket(remote_host, remote_port)
-                var img = s.update()
-                imgWrite(img)
+                var msgret = s.get_msg(msg)
+                if (msgret.stPaddingtype == ClipMsg.ClipMessage.paddingtype.PNG) {
+                    imgWrite(msgret.stPadding.toByteArray())
+                    Log.d("mytag", "get png")
+                } else if (msgret.stPaddingtype == ClipMsg.ClipMessage.paddingtype.TXT) {
+                    var clipboard = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager;
+                    var txt = msgret.stPadding.toStringUtf8()
+                    var clipdata = ClipData.newPlainText("labeltest", txt);
+                    clipboard.primaryClip = clipdata;
+                    Log.d("mytag", "get txt")
+                } else {
+                    // nothing
+                    Log.e("mytag", msgret.toString())
+                }
                 runOnUiThread {
                     Toast.makeText(this, "get clip OK", Toast.LENGTH_SHORT).show()
                 }
@@ -135,6 +141,78 @@ class MainActivity : AppCompatActivity() {
         intent.putExtra(Intent.EXTRA_MIME_TYPES, mimeTypes)
         // Launching the Intent
         startActivityForResult(intent, GALLERY_REQUEST_CODE)
+    }
+
+    private fun push_txt() {
+        var clipboard = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager;
+        var pastedata: String = "";
+        var ispasteallow = when {
+            !clipboard.hasPrimaryClip() -> {
+                false
+            }
+            !(clipboard.primaryClipDescription.hasMimeType(MIMETYPE_TEXT_PLAIN)) -> {
+                // This disables the paste menu item, since the clipboard has data but it is not plain text
+                false
+            }
+            else -> {
+                // This enables the paste menu item, since the clipboard contains plain text.
+                true
+            }
+        };
+        if (ispasteallow) {
+            val item = clipboard.primaryClip.getItemAt(0);
+            var text = item.text;
+            pastedata = if (text != null) {
+                // If the string contains data, then the paste operation is done
+                text.toString()
+            } else {
+                // The clipboard does not contain text.
+                // If it contains a URI, attempts to get data from it
+                val pasteUri: Uri? = item.uri
+
+                if (pasteUri != null) {
+                    // If the URI contains something, try to get text from it
+
+                    // calls a routine to resolve the URI and get data from it. This routine is not
+                    // presented here.
+                    pasteUri.toString()
+                } else {
+                    // Something is wrong. The MIME type was plain text, but the clipboard does not
+                    // contain either text or a Uri. Report an error.
+                    Log.e("mytag","Clipboard contains an invalid data type")
+                    ""
+                }
+            }
+        }
+        if (pastedata != "") {
+            var data = ByteString.copyFrom(pastedata, "utf-8")
+            var msg = createClipMessageDefault()
+                .newBuilderForType()
+                .setStSize(data.size())
+                .setStType(ClipMsg.ClipMessage.msgtype.MSG_PUSH)
+                .setStPadding(data)
+                .setStPaddingtype(ClipMsg.ClipMessage.paddingtype.TXT)
+                .build()
+            var sharedpref: SharedPreferences = PreferenceManager.getDefaultSharedPreferences(this);
+            var remote_host = sharedpref.getString("remote_host", "127.0.0.1");
+            var remote_port_s = sharedpref.getString("remote_port", "0");
+            if (remote_host == "127.0.0.1") {return}
+            if (remote_port_s.toIntOrNull() == null) {return}
+            var remote_port = remote_port_s.toInt()
+            try {
+                Thread {
+                    var s = ClientSocket(remote_host, remote_port)
+                    s.get_msg(msg)
+                    runOnUiThread {
+                        Toast.makeText(this, "push clip OK", Toast.LENGTH_SHORT).show()
+                    }
+                }.start()
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        } else {
+            Log.e("mytag","clipboard empty")
+        }
     }
 
     @Throws(IOException::class)
@@ -160,6 +238,7 @@ class MainActivity : AppCompatActivity() {
                         .setStSize(input_data.size())
                         .setStType(ClipMsg.ClipMessage.msgtype.MSG_PUSH)
                         .setStPadding(input_data)
+                        .setStPaddingtype(ClipMsg.ClipMessage.paddingtype.PNG)
                         .build()
 
                     var sharedpref: SharedPreferences = PreferenceManager.getDefaultSharedPreferences(this);
@@ -167,11 +246,11 @@ class MainActivity : AppCompatActivity() {
                     var remote_port_s = sharedpref.getString("remote_port", "0");
                     if (remote_host == "127.0.0.1") {return}
                     if (remote_port_s.toIntOrNull() == null) {return}
-                    var remote_port = remote_port_s.toInt() + 1
+                    var remote_port = remote_port_s.toInt()
                     try {
                         Thread {
-                            var s = PushSocket(remote_host, remote_port)
-                            s.update(msg)
+                            var s = ClientSocket(remote_host, remote_port)
+                            s.get_msg(msg)
                             runOnUiThread {
                                 Toast.makeText(this, "push clip OK", Toast.LENGTH_SHORT).show()
                             }
@@ -215,11 +294,20 @@ class MainActivity : AppCompatActivity() {
         fab3.setOnClickListener {
             pickFromGallery()
         }
+
+        fab_push_txt.setOnClickListener {
+            push_txt()
+        }
     }
 
     private fun createClipMessageDefault(): ClipMsg.ClipMessage {
+        var data = ByteString.EMPTY;
         val msg_push = ClipMsg.ClipMessage.newBuilder()
             .setStName(1)
+            .setStSize(data.size())
+            .setStType(ClipMsg.ClipMessage.msgtype.MSG_PUSH)
+            .setStPadding(data)
+            .setStPaddingtype(ClipMsg.ClipMessage.paddingtype.PNG)
             .build()
         return msg_push
     }

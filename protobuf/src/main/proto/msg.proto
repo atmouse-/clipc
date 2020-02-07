@@ -15,9 +15,15 @@ message ClipMessage {
         MSG_PUSH_PADDING = 5;
     }
 
+    enum paddingtype {
+        PNG = 0;
+        TXT = 1;
+    }
+
     uint32 st_size = 1;
     msgtype st_type = 2;
     uint32 st_name = 3;
     bool st_ispadding = 4;
     bytes st_padding = 5;
+    paddingtype st_paddingtype = 6;
 }
